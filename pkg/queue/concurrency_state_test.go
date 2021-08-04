@@ -17,6 +17,7 @@ limitations under the License.
 package queue
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -74,13 +75,15 @@ func TestConcurrencyStateHandler(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			paused := atomic.NewInt64(0)
-			pause := func() {
+			pause := func(string) error {
 				paused.Inc()
+				return nil
 			}
 
 			resumed := atomic.NewInt64(0)
-			resume := func() {
+			resume := func(string) error {
 				resumed.Inc()
+				return nil
 			}
 
 			delegated := atomic.NewInt64(0)
@@ -94,7 +97,7 @@ func TestConcurrencyStateHandler(t *testing.T) {
 				delegated.Inc()
 			}
 
-			h := ConcurrencyStateHandler(logger, http.HandlerFunc(delegate), pause, resume)
+			h := ConcurrencyStateHandler(logger, http.HandlerFunc(delegate), pause, resume, "")
 
 			var wg sync.WaitGroup
 			wg.Add(len(tt.events))
@@ -127,6 +130,100 @@ func TestConcurrencyStateHandler(t *testing.T) {
 				t.Errorf("expected to be resumed %d times, but was resumed %d times", want, got)
 			}
 		})
+	}
+}
+
+func TestPauseHeader(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for k, v := range r.Header {
+			if k == "Token" {
+				// TODO update when using token
+				if v[0] != "nil" {
+					t.Errorf("incorrect token header, expected 'nil', got %s", v)
+				}
+			}
+		}
+	}))
+	err := Pause(ts.URL)
+	if err != nil {
+		t.Errorf("pause header check returned an error: %s", err)
+	}
+}
+
+func TestPauseRequest(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		var m ConcurrencyStateMessageBody
+		err := json.NewDecoder(r.Body).Decode(&m)
+		if err != nil {
+			t.Errorf("unable to parse message body: %s", err)
+		}
+		if m.Action != "pause" {
+			t.Errorf("improper message body, expected 'freeze' and got: %s", m.Action)
+		}
+	}))
+	err := Pause(ts.URL)
+	if err != nil {
+		t.Errorf("pause request test returned an error: %s", err)
+	}
+}
+
+func TestPauseResponse(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer ts.Close()
+
+	err := Pause(ts.URL)
+	if err == nil {
+		t.Errorf("failed pause function did not return an error")
+	}
+}
+
+func TestResumeRequest(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		var m ConcurrencyStateMessageBody
+		err := json.NewDecoder(r.Body).Decode(&m)
+		if err != nil {
+			t.Errorf("unable to parse message body: %s", err)
+		}
+		if m.Action != "resume" {
+			t.Errorf("improper message body, expected 'thaw' and got: %s", m.Action)
+		}
+	}))
+	err := Resume(ts.URL)
+	if err != nil {
+		t.Errorf("resume request test returned an error: %s", err)
+	}
+}
+
+func TestResumeResponse(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer ts.Close()
+
+	err := Resume(ts.URL)
+	if err == nil {
+		t.Errorf("failed resume function did not return an error")
+	}
+}
+
+func TestResumeHeader(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for k, v := range r.Header {
+			if k == "Token" {
+				// TODO update when using token
+				if v[0] != "nil" {
+					t.Errorf("incorrect token header, expected 'nil', got %s", v)
+				}
+			}
+		}
+	}))
+	err := Resume(ts.URL)
+	if err != nil {
+		t.Errorf("resume header check returned an error: %s", err)
 	}
 }
 
@@ -175,8 +272,14 @@ func BenchmarkConcurrencyStateProxyHandler(b *testing.B) {
 				promStatReporter.Report(stats.Report(now))
 			}
 		}()
+		pause := func(string) error {
+			return nil
+		}
+		resume := func(string) error {
+			return nil
+		}
 
-		h := ConcurrencyStateHandler(logger, ProxyHandler(tc.breaker, stats, true /*tracingEnabled*/, baseHandler), nil, nil)
+		h := ConcurrencyStateHandler(logger, ProxyHandler(tc.breaker, stats, true /*tracingEnabled*/, baseHandler), pause, resume, "")
 		b.Run("sequential-"+tc.label, func(b *testing.B) {
 			resp := httptest.NewRecorder()
 			for j := 0; j < b.N; j++ {
