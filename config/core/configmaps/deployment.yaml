@@ -85,5 +85,10 @@ data:
     # the endpoint and the port that will be accessed, for example:
     # http://pod-freezer.knative-serving.svc.cluster.local:9696
     # If omitted, queue proxy takes no action (this is the default behavior).
+    # When enabled, a serviceAccountToken will be mounted to queue-proxy using a
+    # projected volume. This requires the Service Account Token Volume Projection feature
+    # to be enabled. For details, see this link:
+    # https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/#service-account-token-volume-projection
+    #
     # NOTE THAT THIS IS AN EXPERIMENTAL / ALPHA FEATURE
     concurrencyStateEndpoint: ""
