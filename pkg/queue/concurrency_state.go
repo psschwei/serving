@@ -20,7 +20,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"net/http"
+	"sync"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -32,8 +35,17 @@ const ConcurrencyStateTokenVolumeMountPath = "/var/run/secrets/tokens"
 // runs the `resume` function. If either of `pause` or `resume` are not passed, it runs
 // the respective local function(s). The local functions are the expected behavior; the
 // function parameters are enabled primarily for testing purposes.
-func ConcurrencyStateHandler(logger *zap.SugaredLogger, h http.Handler, pause, resume func(string) error, endpoint string) http.HandlerFunc {
+func ConcurrencyStateHandler(logger *zap.SugaredLogger, h http.Handler, pause, resume func(string, *Token) error, endpoint string, tokenMountPath string) http.HandlerFunc {
 	logger.Info("Concurrency state endpoint set, tracking request counts, using endpoint: ", endpoint)
+
+	var tokenCfg Token
+	refreshToken(logger, &tokenCfg, tokenMountPath)
+	go func() {
+		for {
+			time.Sleep(1 * time.Minute)
+			refreshToken(logger, &tokenCfg, tokenMountPath)
+		}
+	}()
 
 	type req struct {
 		w http.ResponseWriter
@@ -56,7 +68,7 @@ func ConcurrencyStateHandler(logger *zap.SugaredLogger, h http.Handler, pause, r
 				inFlight--
 				if inFlight == 0 {
 					logger.Info("Requests dropped to zero")
-					if err := pause(endpoint); err != nil {
+					if err := pause(endpoint, &tokenCfg); err != nil {
 						logger.Errorf("Error handling pause request: %v", err)
 						panic(err)
 					}
@@ -67,7 +79,7 @@ func ConcurrencyStateHandler(logger *zap.SugaredLogger, h http.Handler, pause, r
 				inFlight++
 				if inFlight == 1 {
 					logger.Info("Requests increased from zero")
-					if err := resume(endpoint); err != nil {
+					if err := resume(endpoint, &tokenCfg); err != nil {
 						logger.Errorf("Error handling resume request: %v", err)
 						panic(err)
 					}
@@ -92,7 +104,7 @@ func ConcurrencyStateHandler(logger *zap.SugaredLogger, h http.Handler, pause, r
 }
 
 // Pause sends to an endpoint when request counts drop to zero
-func Pause(endpoint string) error {
+func Pause(endpoint string, token *Token) error {
 	action := ConcurrencyStateMessageBody{Action: "pause"}
 	bodyText, err := json.Marshal(action)
 	if err != nil {
@@ -103,7 +115,7 @@ func Pause(endpoint string) error {
 	if err != nil {
 		return fmt.Errorf("unable to create request: %w", err)
 	}
-	req.Header.Add("Token", "nil") // TODO: use serviceaccountToken from projected volume
+	req.Header.Add("Token", token.Get())
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("unable to post request: %w", err)
@@ -116,7 +128,7 @@ func Pause(endpoint string) error {
 }
 
 // Resume sends to an endpoint when request counts increase from zero
-func Resume(endpoint string) error {
+func Resume(endpoint string, token *Token) error {
 	action := ConcurrencyStateMessageBody{Action: "resume"}
 	bodyText, err := json.Marshal(action)
 	if err != nil {
@@ -127,7 +139,7 @@ func Resume(endpoint string) error {
 	if err != nil {
 		return fmt.Errorf("unable to create request: %w", err)
 	}
-	req.Header.Add("Token", "nil") // TODO: use serviceaccountToken from projected volume
+	req.Header.Add("Token", token.Get())
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("unable to post request: %w", err)
@@ -137,6 +149,34 @@ func Resume(endpoint string) error {
 	}
 
 	return nil
+}
+
+type Token struct {
+	sync.RWMutex
+	token string
+}
+
+func (t *Token) Set(token string) {
+	t.Lock()
+	defer t.Unlock()
+
+	t.token = token
+}
+
+func (t *Token) Get() string {
+	t.RLock()
+	defer t.RUnlock()
+
+	return t.token
+}
+
+func refreshToken(logger *zap.SugaredLogger, tokenCfg *Token, tokenMountPath string) {
+	token, err := ioutil.ReadFile(tokenMountPath)
+	if err != nil {
+		logger.Fatal("could not read token: ", err)
+	}
+	tokenCfg.Set(string(token))
+	logger.Info("refresh token...")
 }
 
 type ConcurrencyStateMessageBody struct {

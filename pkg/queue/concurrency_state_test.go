@@ -18,14 +18,17 @@ package queue
 
 import (
 	"encoding/json"
+	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"sync"
 	"testing"
 	"time"
 
 	"go.uber.org/atomic"
+	"go.uber.org/zap"
 	pkglogging "knative.dev/pkg/logging"
 
 	network "knative.dev/networking/pkg"
@@ -75,13 +78,13 @@ func TestConcurrencyStateHandler(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			paused := atomic.NewInt64(0)
-			pause := func(string) error {
+			pause := func(string, *Token) error {
 				paused.Inc()
 				return nil
 			}
 
 			resumed := atomic.NewInt64(0)
-			resume := func(string) error {
+			resume := func(string, *Token) error {
 				resumed.Inc()
 				return nil
 			}
@@ -97,7 +100,10 @@ func TestConcurrencyStateHandler(t *testing.T) {
 				delegated.Inc()
 			}
 
-			h := ConcurrencyStateHandler(logger, http.HandlerFunc(delegate), pause, resume, "")
+			tokenFile := createTempTokenFile(logger)
+			defer os.Remove(tokenFile.Name())
+
+			h := ConcurrencyStateHandler(logger, http.HandlerFunc(delegate), pause, resume, "", tokenFile.Name())
 
 			var wg sync.WaitGroup
 			wg.Add(len(tt.events))
@@ -138,13 +144,14 @@ func TestPauseHeader(t *testing.T) {
 		for k, v := range r.Header {
 			if k == "Token" {
 				// TODO update when using token
-				if v[0] != "nil" {
-					t.Errorf("incorrect token header, expected 'nil', got %s", v)
+				if v[0] != "0123456789" {
+					t.Errorf("incorrect token header, expected '0123456789', got %s", v)
 				}
 			}
 		}
 	}))
-	err := Pause(ts.URL)
+	tempToken := createTempToken()
+	err := Pause(ts.URL, &tempToken)
 	if err != nil {
 		t.Errorf("pause header check returned an error: %s", err)
 	}
@@ -162,7 +169,8 @@ func TestPauseRequest(t *testing.T) {
 			t.Errorf("improper message body, expected 'freeze' and got: %s", m.Action)
 		}
 	}))
-	err := Pause(ts.URL)
+	tempToken := createTempToken()
+	err := Pause(ts.URL, &tempToken)
 	if err != nil {
 		t.Errorf("pause request test returned an error: %s", err)
 	}
@@ -174,7 +182,8 @@ func TestPauseResponse(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	err := Pause(ts.URL)
+	tempToken := createTempToken()
+	err := Pause(ts.URL, &tempToken)
 	if err == nil {
 		t.Errorf("failed pause function did not return an error")
 	}
@@ -192,7 +201,9 @@ func TestResumeRequest(t *testing.T) {
 			t.Errorf("improper message body, expected 'thaw' and got: %s", m.Action)
 		}
 	}))
-	err := Resume(ts.URL)
+
+	tempToken := createTempToken()
+	err := Resume(ts.URL, &tempToken)
 	if err != nil {
 		t.Errorf("resume request test returned an error: %s", err)
 	}
@@ -204,7 +215,8 @@ func TestResumeResponse(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	err := Resume(ts.URL)
+	tempToken := createTempToken()
+	err := Resume(ts.URL, &tempToken)
 	if err == nil {
 		t.Errorf("failed resume function did not return an error")
 	}
@@ -215,13 +227,15 @@ func TestResumeHeader(t *testing.T) {
 		for k, v := range r.Header {
 			if k == "Token" {
 				// TODO update when using token
-				if v[0] != "nil" {
-					t.Errorf("incorrect token header, expected 'nil', got %s", v)
+				if v[0] != "0123456789" {
+					t.Errorf("incorrect token header, expected '0123456789', got %s", v)
 				}
 			}
 		}
 	}))
-	err := Resume(ts.URL)
+
+	tempToken := createTempToken()
+	err := Resume(ts.URL, &tempToken)
 	if err != nil {
 		t.Errorf("resume header check returned an error: %s", err)
 	}
@@ -241,6 +255,9 @@ func BenchmarkConcurrencyStateProxyHandler(b *testing.B) {
 
 	req := httptest.NewRequest(http.MethodPost, "http://example.com", nil)
 	req.Header.Set(network.OriginalHostHeader, wantHost)
+
+	tokenFile := createTempTokenFile(logger)
+	defer os.Remove(tokenFile.Name())
 
 	tests := []struct {
 		label        string
@@ -272,14 +289,14 @@ func BenchmarkConcurrencyStateProxyHandler(b *testing.B) {
 				promStatReporter.Report(stats.Report(now))
 			}
 		}()
-		pause := func(string) error {
+		pause := func(string, *Token) error {
 			return nil
 		}
-		resume := func(string) error {
+		resume := func(string, *Token) error {
 			return nil
 		}
 
-		h := ConcurrencyStateHandler(logger, ProxyHandler(tc.breaker, stats, true /*tracingEnabled*/, baseHandler), pause, resume, "")
+		h := ConcurrencyStateHandler(logger, ProxyHandler(tc.breaker, stats, true /*tracingEnabled*/, baseHandler), pause, resume, "", tokenFile.Name())
 		b.Run("sequential-"+tc.label, func(b *testing.B) {
 			resp := httptest.NewRecorder()
 			for j := 0; j < b.N; j++ {
@@ -297,4 +314,28 @@ func BenchmarkConcurrencyStateProxyHandler(b *testing.B) {
 
 		reportTicker.Stop()
 	}
+}
+
+// createTempTokenFile creates a temporary file with the text "0123456789" for simulating a serviceAccountToken
+// Note that it does NOT delete the temp file, this must be called seperately, for example:
+//
+// tempFile := createTempTokenFile(logger)
+// defer os.Remove(tempFile.Name())
+func createTempTokenFile(logger *zap.SugaredLogger) *os.File {
+	tokenFile, err := ioutil.TempFile("", "secret")
+	if err != nil {
+		logger.Fatal(err)
+	}
+	if _, err := tokenFile.Write([]byte("0123456789")); err != nil {
+		logger.Fatal(err)
+	}
+	if err := tokenFile.Close(); err != nil {
+		logger.Fatal(err)
+	}
+	return tokenFile
+}
+
+func createTempToken() Token {
+	token := Token{token: "0123456789"}
+	return token
 }
