@@ -317,7 +317,7 @@ func BenchmarkConcurrencyStateProxyHandler(b *testing.B) {
 }
 
 // createTempTokenFile creates a temporary file with the text "0123456789" for simulating a serviceAccountToken
-// Note that it does NOT delete the temp file, this must be called seperately, for example:
+// Note that it does NOT delete the temp file, this must be called separately, for example:
 //
 // tempFile := createTempTokenFile(logger)
 // defer os.Remove(tempFile.Name())
