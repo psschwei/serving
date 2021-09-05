@@ -133,11 +133,13 @@ func ConcurrencyStateHandler(logger *zap.SugaredLogger, h http.Handler, pause, r
 	}
 }
 
+// FreezePodRetry handle the failed request when call Resume/Pause
 func FreezePodRetry(logger *zap.SugaredLogger, ch chan RetryElement, token *Token, pause, resume func(string, *Token) (int8, error)) {
 	for {
 		elementNow := <-ch
 		elementNow.timesNow += 1
 		if elementNow.timesNow > FreezeMaxRetryTimes {
+			// TODO: relaunch a new pod
 			panic("Relaunch a pod")
 		}
 		switch elementNow.op {
