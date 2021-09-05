@@ -78,15 +78,15 @@ func TestConcurrencyStateHandler(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			paused := atomic.NewInt64(0)
-			pause := func(string, *Token) error {
+			pause := func(string, *Token) (int8, error) {
 				paused.Inc()
-				return nil
+				return noError, nil
 			}
 
 			resumed := atomic.NewInt64(0)
-			resume := func(string, *Token) error {
+			resume := func(string, *Token) (int8, error) {
 				resumed.Inc()
-				return nil
+				return noError, nil
 			}
 
 			delegated := atomic.NewInt64(0)
@@ -151,9 +151,9 @@ func TestPauseHeader(t *testing.T) {
 		}
 	}))
 	tempToken := createTempToken()
-	err := Pause(ts.URL, &tempToken)
+	errCode, err := Pause(ts.URL, &tempToken)
 	if err != nil {
-		t.Errorf("pause header check returned an error: %s", err)
+		t.Errorf("pause header check returned an error: %d, %s", errCode, err)
 	}
 }
 
@@ -170,9 +170,9 @@ func TestPauseRequest(t *testing.T) {
 		}
 	}))
 	tempToken := createTempToken()
-	err := Pause(ts.URL, &tempToken)
+	errCode, err := Pause(ts.URL, &tempToken)
 	if err != nil {
-		t.Errorf("pause request test returned an error: %s", err)
+		t.Errorf("pause request test returned an error: %d, %s", errCode, err)
 	}
 }
 
@@ -183,9 +183,22 @@ func TestPauseResponse(t *testing.T) {
 	defer ts.Close()
 
 	tempToken := createTempToken()
-	err := Pause(ts.URL, &tempToken)
+	_, err := Pause(ts.URL, &tempToken)
 	if err == nil {
 		t.Errorf("failed pause function did not return an error")
+	}
+}
+
+func TestPauseStatusConflictResponse(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+	}))
+	defer ts.Close()
+
+	tempToken := createTempToken()
+	errCode, _ := Pause(ts.URL, &tempToken)
+	if errCode != responseStatusConflictError {
+		t.Errorf("failed pause function did not return status conflict error")
 	}
 }
 
@@ -203,9 +216,9 @@ func TestResumeRequest(t *testing.T) {
 	}))
 
 	tempToken := createTempToken()
-	err := Resume(ts.URL, &tempToken)
+	errCode, err := Resume(ts.URL, &tempToken)
 	if err != nil {
-		t.Errorf("resume request test returned an error: %s", err)
+		t.Errorf("resume request test returned an error: %d, %s", errCode, err)
 	}
 }
 
@@ -216,9 +229,22 @@ func TestResumeResponse(t *testing.T) {
 	defer ts.Close()
 
 	tempToken := createTempToken()
-	err := Resume(ts.URL, &tempToken)
+	_, err := Resume(ts.URL, &tempToken)
 	if err == nil {
 		t.Errorf("failed resume function did not return an error")
+	}
+}
+
+func TestResumeStatusConflictResponse(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+	}))
+	defer ts.Close()
+
+	tempToken := createTempToken()
+	errCode, _ := Resume(ts.URL, &tempToken)
+	if errCode != responseStatusConflictError {
+		t.Errorf("failed resume function did not return status conflict error")
 	}
 }
 
@@ -235,9 +261,9 @@ func TestResumeHeader(t *testing.T) {
 	}))
 
 	tempToken := createTempToken()
-	err := Resume(ts.URL, &tempToken)
+	errCode, err := Resume(ts.URL, &tempToken)
 	if err != nil {
-		t.Errorf("resume header check returned an error: %s", err)
+		t.Errorf("resume header check returned an error: %d, %s", errCode, err)
 	}
 }
 
@@ -289,11 +315,11 @@ func BenchmarkConcurrencyStateProxyHandler(b *testing.B) {
 				promStatReporter.Report(stats.Report(now))
 			}
 		}()
-		pause := func(string, *Token) error {
-			return nil
+		pause := func(string, *Token) (int8, error) {
+			return noError, nil
 		}
-		resume := func(string, *Token) error {
-			return nil
+		resume := func(string, *Token) (int8, error) {
+			return noError, nil
 		}
 
 		h := ConcurrencyStateHandler(logger, ProxyHandler(tc.breaker, stats, true /*tracingEnabled*/, baseHandler), pause, resume, "", tokenFile.Name())

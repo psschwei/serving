@@ -29,13 +29,22 @@ import (
 )
 
 const ConcurrencyStateTokenVolumeMountPath = "/var/run/secrets/tokens"
+const FreezeMaxRetryTimes = 5 // If pause/resume failed 5 times, it should relaunch a pod
+
+// error code for exec Pause/Resume function
+const (
+	noError                        = 0 // everything works
+	internalError                  = 1 // some internal error happen, like json decode failed, should try again
+	responseStatusConflictError    = 2 // like exec pause when the container is in pause state, should forget
+	responseExecError              = 3 // the command exec failed in runtime level, should try again
+)
 
 // ConcurrencyStateHandler tracks the in flight requests for the pod. When the requests
 // drop to zero, it runs the `pause` function, and when requests scale up from zero, it
 // runs the `resume` function. If either of `pause` or `resume` are not passed, it runs
 // the respective local function(s). The local functions are the expected behavior; the
 // function parameters are enabled primarily for testing purposes.
-func ConcurrencyStateHandler(logger *zap.SugaredLogger, h http.Handler, pause, resume func(string, *Token) error, endpoint string, tokenMountPath string) http.HandlerFunc {
+func ConcurrencyStateHandler(logger *zap.SugaredLogger, h http.Handler, pause, resume func(string, *Token) (int8, error), endpoint string, tokenMountPath string) http.HandlerFunc {
 	logger.Info("Concurrency state endpoint set, tracking request counts, using endpoint: ", endpoint)
 
 	var tokenCfg Token
@@ -68,22 +77,32 @@ func ConcurrencyStateHandler(logger *zap.SugaredLogger, h http.Handler, pause, r
 				inFlight--
 				if inFlight == 0 {
 					logger.Info("Requests dropped to zero")
-					if err := pause(endpoint, &tokenCfg); err != nil {
-						logger.Errorf("Error handling pause request: %v", err)
+					errCode, err := pause(endpoint, &tokenCfg)
+					switch errCode {
+					case internalError, responseExecError:
+						logger.Errorf("Error handling pause request: %v, we will try it again", err)
 						panic(err)
+					case responseStatusConflictError:
+						logger.Info("Error handling pause request: %v, it will be ignored", err)
+					case noError:
+						logger.Info("To-Zero request successfully processed")
 					}
-					logger.Info("To-Zero request successfully processed")
 				}
 
 			case r := <-reqCh:
 				inFlight++
 				if inFlight == 1 {
 					logger.Info("Requests increased from zero")
-					if err := resume(endpoint, &tokenCfg); err != nil {
-						logger.Errorf("Error handling resume request: %v", err)
+					errCode, err := resume(endpoint, &tokenCfg)
+					switch errCode {
+					case internalError, responseExecError:
+						logger.Errorf("Error handling resume request: %v, we will try it again", err)
 						panic(err)
+					case responseStatusConflictError:
+						logger.Info("Error handling resume request: %v, it will be ignored", err)
+					case noError:
+						logger.Info("From-Zero request successfully processed")
 					}
-					logger.Info("From-Zero request successfully processed")
 				}
 
 				go func(r req) {
@@ -104,51 +123,57 @@ func ConcurrencyStateHandler(logger *zap.SugaredLogger, h http.Handler, pause, r
 }
 
 // Pause sends to an endpoint when request counts drop to zero
-func Pause(endpoint string, token *Token) error {
+func Pause(endpoint string, token *Token) (int8, error) {
 	action := ConcurrencyStateMessageBody{Action: "pause"}
 	bodyText, err := json.Marshal(action)
 	if err != nil {
-		return fmt.Errorf("unable to create request body: %w", err)
+		return internalError, fmt.Errorf("unable to create request body: %w", err)
 	}
 	body := bytes.NewBuffer(bodyText)
 	req, err := http.NewRequest(http.MethodPost, endpoint, body)
 	if err != nil {
-		return fmt.Errorf("unable to create request: %w", err)
+		return internalError, fmt.Errorf("unable to create request: %w", err)
 	}
 	req.Header.Add("Token", token.Get())
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("unable to post request: %w", err)
+		return internalError, fmt.Errorf("unable to post request: %w", err)
+	}
+	if resp.StatusCode == http.StatusConflict {
+		return responseStatusConflictError, fmt.Errorf("expected container status is in running state, but actually not")
 	}
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("expected 200 response, got: %d: %s", resp.StatusCode, resp.Status)
+		return responseExecError, fmt.Errorf("expected 200 response, got: %d: %s", resp.StatusCode, resp.Status)
 	}
 
-	return nil
+	return noError, nil
 }
 
 // Resume sends to an endpoint when request counts increase from zero
-func Resume(endpoint string, token *Token) error {
+func Resume(endpoint string, token *Token) (int8, error) {
 	action := ConcurrencyStateMessageBody{Action: "resume"}
 	bodyText, err := json.Marshal(action)
 	if err != nil {
-		return fmt.Errorf("unable to create request body: %w", err)
+		return internalError, fmt.Errorf("unable to create request body: %w", err)
 	}
 	body := bytes.NewBuffer(bodyText)
 	req, err := http.NewRequest(http.MethodPost, endpoint, body)
 	if err != nil {
-		return fmt.Errorf("unable to create request: %w", err)
+		return internalError, fmt.Errorf("unable to create request: %w", err)
 	}
 	req.Header.Add("Token", token.Get())
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("unable to post request: %w", err)
+		return internalError, fmt.Errorf("unable to post request: %w", err)
+	}
+	if resp.StatusCode == http.StatusConflict {
+		return responseStatusConflictError, fmt.Errorf("expected container status is in paused state, but actually not")
 	}
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("expected 200 response, got: %d: %s", resp.StatusCode, resp.Status)
+		return responseExecError, fmt.Errorf("expected 200 response, got: %d: %s", resp.StatusCode, resp.Status)
 	}
 
-	return nil
+	return noError, nil
 }
 
 type Token struct {
