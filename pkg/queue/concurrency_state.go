@@ -136,7 +136,7 @@ func ConcurrencyStateHandler(logger *zap.SugaredLogger, h http.Handler, pause, r
 func FreezePodRetry(logger *zap.SugaredLogger, ch chan RetryElement, token *Token, pause, resume func(string, *Token) (int8, error)) {
 	for {
 		elementNow := <-ch
-		ch <- RetryElement{} // stub this channel till handled
+		ch <- RetryElement{} // keep this channel owned till handled
 		elementNow.timesNow += 1
 		if elementNow.timesNow > FreezeMaxRetryTimes {
 			panic("Relaunch a pod")
