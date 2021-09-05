@@ -86,12 +86,12 @@ func ConcurrencyStateHandler(logger *zap.SugaredLogger, h http.Handler, pause, r
 				inFlight--
 				if inFlight == 0 {
 					logger.Info("Requests dropped to zero")
-					retryChannel <- RetryElement{op:"CheckHandled"} // wait the channel empty
 					errCode, err := pause(endpoint, &tokenCfg)
 					switch errCode {
 					case internalError, responseExecError:
 						logger.Errorf("Error handling pause request: %v, we will try it again", err)
 						retryChannel <- RetryElement{"pause", endpoint, 0}
+						retryChannel <- RetryElement{op:"CheckHandled"} // wait the channel handled
 					case responseStatusConflictError:
 						logger.Info("Error handling pause request: %v, it will be ignored", err)
 					case noError:
@@ -103,12 +103,12 @@ func ConcurrencyStateHandler(logger *zap.SugaredLogger, h http.Handler, pause, r
 				inFlight++
 				if inFlight == 1 {
 					logger.Info("Requests increased from zero")
-					retryChannel <- RetryElement{op:"CheckHandled"} // wait the channel empty
 					errCode, err := resume(endpoint, &tokenCfg)
 					switch errCode {
 					case internalError, responseExecError:
 						logger.Errorf("Error handling resume request: %v, we will try it again", err)
 						retryChannel <- RetryElement{"resume", endpoint, 0}
+						retryChannel <- RetryElement{op:"CheckHandled"} // wait the channel handled
 					case responseStatusConflictError:
 						logger.Info("Error handling resume request: %v, it will be ignored", err)
 					case noError:
@@ -136,27 +136,24 @@ func ConcurrencyStateHandler(logger *zap.SugaredLogger, h http.Handler, pause, r
 func FreezePodRetry(logger *zap.SugaredLogger, ch chan RetryElement, token *Token, pause, resume func(string, *Token) (int8, error)) {
 	for {
 		elementNow := <-ch
-		ch <- RetryElement{} // keep this channel owned till handled
 		elementNow.timesNow += 1
 		if elementNow.timesNow > FreezeMaxRetryTimes {
 			panic("Relaunch a pod")
 		}
 		switch elementNow.op {
 		case "pause":
+			time.Sleep(time.Second)
 			errCode, err := pause(elementNow.endpoint, token)
-			<-ch
 			if errCode != responseStatusConflictError && errCode != noError {
 				logger.Info("Error handling pause request: %v", err)
 				ch <- elementNow
-				time.Sleep(time.Second)
 			}
 		case "resume":
+			time.Sleep(time.Second)
 			errCode, err := resume(elementNow.endpoint, token)
-			<-ch
 			if errCode != responseStatusConflictError && errCode != noError {
 				logger.Info("Error handling resume request: %v", err)
 				ch <- elementNow
-				time.Sleep(time.Second)
 			}
 		default:
 			<-ch
