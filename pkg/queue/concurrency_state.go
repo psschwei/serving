@@ -29,7 +29,7 @@ import (
 )
 
 const ConcurrencyStateTokenVolumeMountPath = "/var/run/secrets/tokens"
-const FreezeMaxRetryTimes = 5 // If pause/resume failed 5 times, it should relaunch a pod
+const FreezeMaxRetryTimes = 3 // If pause/resume failed 5 times, it should relaunch a pod
 
 // error code for exec Pause/Resume function
 const (
@@ -145,20 +145,20 @@ func FreezePodRetry(logger *zap.SugaredLogger, ch chan RetryElement, retryDoneCh
 		}
 		switch elementNow.op {
 		case "pause":
-			time.Sleep(time.Second)
 			errCode, err := pause(elementNow.endpoint, token)
 			if errCode != responseStatusConflictError && errCode != noError {
 				logger.Info("Error handling pause request: %v", err)
 				ch <- elementNow
+				time.Sleep(100 * time.Millisecond)
 			} else {
 				retryDoneChannel <- struct{}{}
 			}
 		case "resume":
-			time.Sleep(time.Second)
 			errCode, err := resume(elementNow.endpoint, token)
 			if errCode != responseStatusConflictError && errCode != noError {
 				logger.Info("Error handling resume request: %v", err)
 				ch <- elementNow
+				time.Sleep(100 * time.Millisecond)
 			} else {
 				retryDoneChannel <- struct{}{}
 			}
