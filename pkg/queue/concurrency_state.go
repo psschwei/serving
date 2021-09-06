@@ -63,7 +63,8 @@ func ConcurrencyStateHandler(logger *zap.SugaredLogger, h http.Handler, pause, r
 	}()
 
 	retryChannel := make(chan RetryElement, 1)
-	go FreezePodRetry(logger, retryChannel, &tokenCfg, pause, resume)
+	retryDoneChannel := make(chan struct{}, 1)
+	go FreezePodRetry(logger, retryChannel, retryDoneChannel, &tokenCfg, pause, resume)
 
 	type req struct {
 		w http.ResponseWriter
@@ -91,7 +92,7 @@ func ConcurrencyStateHandler(logger *zap.SugaredLogger, h http.Handler, pause, r
 					case internalError, responseExecError:
 						logger.Errorf("Error handling pause request: %v, we will try it again", err)
 						retryChannel <- RetryElement{"pause", endpoint, 0}
-						retryChannel <- RetryElement{op:"CheckHandled"} // wait the channel handled
+						<-retryDoneChannel
 					case responseStatusConflictError:
 						logger.Info("Error handling pause request: %v, it will be ignored", err)
 					case noError:
@@ -108,7 +109,7 @@ func ConcurrencyStateHandler(logger *zap.SugaredLogger, h http.Handler, pause, r
 					case internalError, responseExecError:
 						logger.Errorf("Error handling resume request: %v, we will try it again", err)
 						retryChannel <- RetryElement{"resume", endpoint, 0}
-						retryChannel <- RetryElement{op:"CheckHandled"} // wait the channel handled
+						<-retryDoneChannel
 					case responseStatusConflictError:
 						logger.Info("Error handling resume request: %v, it will be ignored", err)
 					case noError:
@@ -134,7 +135,7 @@ func ConcurrencyStateHandler(logger *zap.SugaredLogger, h http.Handler, pause, r
 }
 
 // FreezePodRetry handle the failed request when call Resume/Pause
-func FreezePodRetry(logger *zap.SugaredLogger, ch chan RetryElement, token *Token, pause, resume func(string, *Token) (int8, error)) {
+func FreezePodRetry(logger *zap.SugaredLogger, ch chan RetryElement, retryDoneChannel chan struct{}, token *Token, pause, resume func(string, *Token) (int8, error)) {
 	for {
 		elementNow := <-ch
 		elementNow.timesNow += 1
@@ -149,6 +150,8 @@ func FreezePodRetry(logger *zap.SugaredLogger, ch chan RetryElement, token *Toke
 			if errCode != responseStatusConflictError && errCode != noError {
 				logger.Info("Error handling pause request: %v", err)
 				ch <- elementNow
+			} else {
+				retryDoneChannel <- struct{}{}
 			}
 		case "resume":
 			time.Sleep(time.Second)
@@ -156,9 +159,9 @@ func FreezePodRetry(logger *zap.SugaredLogger, ch chan RetryElement, token *Toke
 			if errCode != responseStatusConflictError && errCode != noError {
 				logger.Info("Error handling resume request: %v", err)
 				ch <- elementNow
+			} else {
+				retryDoneChannel <- struct{}{}
 			}
-		default:
-			<-ch
 		}
 	}
 }
