@@ -18,6 +18,7 @@ package v1
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
@@ -134,28 +135,31 @@ func (rs *RevisionSpec) applyDefault(ctx context.Context, container *corev1.Cont
 }
 
 func (*RevisionSpec) applyProbes(container *corev1.Container) {
-	if container.ReadinessProbe == nil {
-		container.ReadinessProbe = &corev1.Probe{}
-	}
-	if container.ReadinessProbe.TCPSocket == nil &&
-		container.ReadinessProbe.HTTPGet == nil &&
-		container.ReadinessProbe.Exec == nil {
-		container.ReadinessProbe.TCPSocket = &corev1.TCPSocketAction{}
-	}
-
-	if container.ReadinessProbe.SuccessThreshold == 0 {
-		container.ReadinessProbe.SuccessThreshold = 1
-	}
-
-	// Apply k8s defaults when ReadinessProbe.PeriodSeconds property is set
-	if container.ReadinessProbe.PeriodSeconds != 0 {
-		if container.ReadinessProbe.FailureThreshold == 0 {
-			container.ReadinessProbe.FailureThreshold = 3
+	/*
+		if container.ReadinessProbe == nil {
+			container.ReadinessProbe = &corev1.Probe{}
 		}
-		if container.ReadinessProbe.TimeoutSeconds == 0 {
-			container.ReadinessProbe.TimeoutSeconds = 1
+		if container.ReadinessProbe.TCPSocket == nil &&
+			container.ReadinessProbe.HTTPGet == nil &&
+			container.ReadinessProbe.Exec == nil {
+			container.ReadinessProbe.TCPSocket = &corev1.TCPSocketAction{}
 		}
-	}
+
+		if container.ReadinessProbe.SuccessThreshold == 0 {
+			container.ReadinessProbe.SuccessThreshold = 1
+		}
+
+		// Apply k8s defaults when ReadinessProbe.PeriodSeconds property is set
+		if container.ReadinessProbe.PeriodSeconds != 0 {
+			if container.ReadinessProbe.FailureThreshold == 0 {
+				container.ReadinessProbe.FailureThreshold = 3
+			}
+			if container.ReadinessProbe.TimeoutSeconds == 0 {
+				container.ReadinessProbe.TimeoutSeconds = 1
+			}
+		}
+	*/
+	fmt.Println("applying probes")
 }
 
 func applyDefaultContainerNames(containers []corev1.Container, containerNames sets.String, defaultContainerName string) {
